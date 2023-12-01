@@ -1,3 +1,8 @@
 **/.DS_Store
 **/.Rhistory
 **/WoRMS_biota_functional_group_2016-08-08.txt.zip
+.Rproj.user
+
+/sformel_notebook/data/
+*.rds
+/sformel_notebook/sformel_notebook_webb_et_al_2010_figure2_files/

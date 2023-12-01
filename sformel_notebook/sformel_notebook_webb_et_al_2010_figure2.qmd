@@ -1,0 +1,120 @@
+---
+title: "Update to Webb et al. 2010 [Figure 2]"
+author: "Stephen Formel"
+format: html
+editor: visual
+toc: true
+execute:
+  echo: false
+---
+
+```{r}
+#| label: load-packages
+
+library(dplyr)
+```
+
+## Background
+
+This is based on a fork of the repo of https://github.com/iobis/dataproducts, which was a re-analysis of OBIS data to recreate Figure 2 from Webb et al. 2010 (https://doi.org/10.1371/journal.pone.0010223)
+
+The original [Figure 2 from Webb et al.](https://doi.org/10.1371/journal.pone.0010223.g002) represented the "global distribution \[of OBIS record\] within the water column of recorded marine biodiversity." The original caption is:
+
+> \
+> The horizontal axis splits the oceans into five zones on the basis of depth (see [Table 1](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0010223#pone-0010223-t001)), with the width of each zone on this axis proportional to its global surface area. The vertical axis is ocean depth, on a linear scale. This means that area on the graph is proportional to volume of ocean. For instance, in the deep sea each cell of 200m depth represents *c.* 3.5×10^6^ km^3^ (see cell drawn separately for scale). The number of records in each cell (each unique combination of sample and bottom depth, following the scheme in [Table 1](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0010223#pone-0010223-t001)) is standardised to the volume of water represented by that cell, and then log~10~-transformed. The inset shows in greater detail the continental shelf and slope, where the majority of records are found.
+
+The methods section of the paper describes the downloaded data from OBIS, after summarizing the number of record for each unique combination of bottom depth and sample depth, to consist of, *"a working dataset of 6987676 individual records sampled from 172012 unique locations in three-dimensional (latitude, longitude, sample depth) space."*
+
+At the time of writing, the authors describe OBIS of including \> 22 million records. In November 2018, Pieter Provoost recreated this figure, `apparently revising a potential error in the analysis` although his figure was based on \~ 30 million records, after filtering; about 3 times as many records as available to Webb et al. As of `r Sys.Date()`, OBIS has grown to include `generate this code` unfiltered records.
+
+## Purpose
+
+Here, I update the work of Pieter Provoost to increase the documentation and take advantage of relatively new OBIS features (e.g. data delivered in a parquet format), and code, to create a figure that can be more easily reproduced, iterated, and customized for spatial, temporal and taxonomic needs.
+
+### Downloading the data
+
+Although one of the advantages of a parquet file is the ability to call it and work with it in a cloud environment, on my local connection (I work remotely), this is too slow. I find it is much more efficient to download a local copy, which can be removed after analysis.
+
+Download the local copy, using some prior detective work to programatically find the URI for the most recent parquet file. First, scrape the OBIS API exports log for the parquet files. They will be delivered newest to oldest. Create a metadata file of what you are downloading, for provenance.
+
+If you prefer, you can manually download this file from: https://obis.org/data/access/
+
+```{r}
+
+fileMetadata <- httr::GET("https://api.obis.org/export?complete=true") %>% 
+  httr::content()  %>% 
+  .[["results"]] %>% 
+  purrr::keep(~.x[['type']] == 'parquet') %>% 
+  .[[1]]
+
+if (!dir.exists("data")){
+  dir.create("data")
+  }
+
+sink(paste0("data/OBIS_download_", Sys.Date(), ".txt")) 
+print(fileMetadata) 
+sink()
+```
+
+Then, check if the current version is already downloaded. If not, grab the filename from the previous codeblock, and paste it together with the root URI, to get the full URI and download the file, after setting R options to avoid a timeout. Currently, the file is about 16 GB. It took about 45 min to download it for me.
+
+```{r}
+
+fname <- fileMetadata %>% .[["s3path"]]
+root <- "https://obis-datasets.ams3.digitaloceanspaces.com/"
+destination_path <- paste0("data/", basename(fname))
+                           
+if (!file.exists(destination_path)){
+  
+  options(timeout = 1e4)
+  download.file(url = paste0(root, fname), 
+                destfile = paste0("data/", 
+                                  basename(fname)), 
+                mode = "wb")
+}
+```
+
+Rewrite `dataproducts/depth_distribution/download_data.R` to use arrow and tidyverse functions to filter and summarize the data.
+
+```{r}
+
+endyear <- format(Sys.Date(), "%Y")
+
+depth_bins <- c(seq(0, 200, by = 50),
+                seq(300, 1e3, by = 100),
+                seq(1.2e3, 6e3, by = 200),
+                seq(7e3, 11e3, by = 1e3)
+                )
+
+#See column names
+arrow::open_dataset(sources = "data/obis_20230726.parquet")$schema$names %>%  sort()
+
+obis_ds <- arrow::read_parquet(file = "data/obis_20230726.parquet") %>% 
+  select(AphiaID,
+         minimumDepthInMeters,
+         maximumDepthInMeters,
+         decimalLatitude,
+         decimalLongitude,
+         bathymetry) %>% 
+  filter(AphiaID == 205469) %>% 
+  collect()
+  filter(!is.null(minimumDepthInMeters) | !is.null(minimumDepthInMeters) &
+           !is.null(decimalLatitude) & !is.null(decimalLongitude)) %>%
+  filter(minimumDepthInMeters > bottom_depth | 
+           maximumDepthInMeters > bottom_depth) %>%
+  mutate(depth_bins = cut(minimumDepthInMeters, 
+                          breaks = depth_bins, 
+                          right = FALSE)) %>% 
+  group_by(scientificNameID,
+         minimumDepthInMeters,
+         maximumDepthInMeters,
+         decimalLatitude,
+         decimalLongitude) %>% 
+  summarise(record_ct = n()) %>% 
+  collect()
+  
+  
+# For now, if I can recreate the records_.dat, then I can use this global depths map and figure out how to recreate that later
+load("../depth_distribution/data/records_.dat")
+glob.depths <- read.table("../depth_distribution/data/global_map.xyz.sav", sep = "\t")
+```
